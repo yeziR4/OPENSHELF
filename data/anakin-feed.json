@@ -468,8 +468,8 @@
     "country": "India",
     "date_text_raw": "Sep 06 - 20, 2026",
     "time_left_text": "7 days left",
-    "prize_amount_raw": "₹ 50,000",
-    "prize_currency": "₹ 50,000",
+    "prize_amount_raw": "50,000",
+    "prize_currency": null,
     "prize_amount_value": 50000.0,
     "registration_deadline": "2026-09-20T23:59:00+05:30",
     "themes": [
@@ -1670,8 +1670,8 @@
     "country": null,
     "date_text_raw": "Sep 17 - 20, 2026",
     "time_left_text": "Upcoming",
-    "prize_amount_raw": "₹ 20,000",
-    "prize_currency": "₹ 20,000",
+    "prize_amount_raw": "20,000",
+    "prize_currency": null,
     "prize_amount_value": 20000.0,
     "registration_deadline": "2026-09-18T00:00:00+05:30",
     "themes": [

@@ -210,7 +210,12 @@ export function normalizeAnakinFeed(raw: Array<Record<string, unknown>>, today =
     const source = String(item.source ?? "unknown");
 
     const prizeValue = typeof item.prize_amount_value === "number" ? item.prize_amount_value : null;
-    const prizeCurrency = nullableText(item.prize_currency, 20);
+    // The pipeline validates this, but a currency "code" that's actually a
+    // whole formatted price (seen once from a source's own API glitch) would
+    // otherwise double up with prizeValue below ("₹ 20,000 20,000") — guard
+    // here too rather than trust it's always been sanitized upstream.
+    const prizeCurrencyRaw = nullableText(item.prize_currency, 20);
+    const prizeCurrency = prizeCurrencyRaw && !/\d/.test(prizeCurrencyRaw) ? prizeCurrencyRaw : null;
     const reward = prizeValue != null && prizeValue > 0
       ? `${prizeCurrency ?? ""} ${prizeValue.toLocaleString()}`.trim()
       : (prizeValue === 0 ? null : nullableText(item.prize_amount_raw, 100));

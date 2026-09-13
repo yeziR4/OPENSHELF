@@ -278,6 +278,13 @@ def normalize_unstop(row: dict[str, Any], category: str) -> Opportunity:
     if prizes:
         code = prizes[0].get("currency")
         currency = {"fa-rupee": "INR", "fa-dollar": "USD"}.get(code, code)
+        # Unstop's own `currency` field isn't always a short code — for at
+        # least one listing it came back as the whole formatted price
+        # ("₹ 20,000") instead of "fa-rupee"/"INR". A real currency code is
+        # short and has no digits; anything else is discarded rather than
+        # risk displaying "₹ 20,000 20,000" downstream.
+        if currency and (any(ch.isdigit() for ch in currency) or len(currency) > 6):
+            currency = None
     addr = row.get("address_with_country_logo") or {}
     country = (addr.get("country") or {}).get("name")
     city = addr.get("city")

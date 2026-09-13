@@ -1,9 +1,9 @@
 const $ = (selector) => document.querySelector(selector);
 const feed = $("#feed"),
   progress = $("#progress"),
-  compileProgress = $("#compile-progress"),
-  compileResults = $("#compile-results");
+  filters = $("#filters");
 let category = "all";
+let catalog = null;
 const categoryNames = {
   tender: "Tender",
   freelance: "Freelance",
@@ -13,12 +13,11 @@ const categoryNames = {
   fellowship: "Fellowship",
   competition: "Competition",
 };
-async function api(path, options) {
-  const response = await fetch(path, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Request failed");
-  return data;
-}
+// How often .github/workflows/refresh-and-deploy.yml re-runs the pipeline —
+// keep this in sync with that file's cron schedule. Purely informational;
+// nothing here actually schedules anything client-side.
+const REFRESH_INTERVAL_HOURS = 6;
+
 function escapeHtml(value) {
   return String(value ?? "").replace(
     /[&<>'"]/g,
@@ -36,7 +35,7 @@ function formatDate(value) {
     year: "numeric",
   }).format(new Date(value));
 }
-function relativeSync(value) {
+function relativeTime(value) {
   if (!value) return "Not synced";
   const minutes = Math.max(
     0,
@@ -50,6 +49,36 @@ function relativeSync(value) {
         ? `${Math.round(minutes / 60)}h ago`
         : `${Math.round(minutes / 1440)}d ago`;
 }
+function nextRefreshText(lastSyncedAt) {
+  if (!lastSyncedAt) return "Next check pending";
+  const dueAt = Date.parse(lastSyncedAt) + REFRESH_INTERVAL_HOURS * 3_600_000;
+  const minutes = Math.round((dueAt - Date.now()) / 60000);
+  if (minutes <= 0) return "Next check due any moment";
+  return minutes < 60 ? `Next check in ${minutes}m` : `Next check in ${Math.round(minutes / 60)}h`;
+}
+
+// Mirrors the filter/sort logic server.ts used to apply server-side —
+// there's no server now, so this runs the same rules against the static
+// public/data/opportunities.json.
+function qualifiedOpportunities(items) {
+  return items.filter(
+    (item) =>
+      item.verification === "page-verified" &&
+      (item.entryType === "collection" ||
+        Boolean(item.deadline) ||
+        item.status === "rolling" ||
+        (item.category === "hackathon" && Boolean(item.applicationUrl))),
+  );
+}
+function sortOpportunities(items, sort) {
+  const sorted = [...items];
+  if (sort === "deadline") sorted.sort((a, b) => (a.deadlineAt ?? "9999").localeCompare(b.deadlineAt ?? "9999"));
+  else if (sort === "new") sorted.sort((a, b) => b.observedAt.localeCompare(a.observedAt));
+  // "top" needs no client-side sort: the build script already writes
+  // opportunities pre-ranked by score (rankAndDedupe), highest first.
+  return sorted;
+}
+
 function card(item, index) {
   const warnings =
     item.dataWarnings
@@ -65,76 +94,58 @@ function card(item, index) {
       ? "Rolling"
       : item.deadline || formatDate(item.deadlineAt);
   const media = item.imageUrl ? `<img class="opportunity-image" src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(item.imageAlt || item.title)}" loading="lazy">` : "";
-  return `<article class="opportunity-card">${media}<div class="opportunity-top"><span class="category ${item.category}">${escapeHtml(categoryNames[item.category] || item.category)}${collection ? " feed" : ""}</span><span class="rank">#${String(index + 1).padStart(2, "0")}</span></div><div class="score"><strong>${item.score}</strong><small>VERIFIED SCORE</small></div><h3>${escapeHtml(item.title)}</h3><p class="source">${escapeHtml(item.organizer || "Organizer not stated")} · <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.sourceHost)}</a>${item.verification === "page-verified" ? " · official page checked" : ""}</p><p class="summary">${escapeHtml(item.summary || "Open the source to review this opportunity.")}</p><div class="facts"><div><small>APPLICATION DEADLINE</small><strong>${escapeHtml(deadline)}</strong></div><div><small>PRIZE POOL</small><strong>${escapeHtml(collection ? "Varies" : item.reward || "Not stated")}</strong></div></div>${item.eligibility ? `<p class="eligibility"><b>Who can apply:</b> ${escapeHtml(item.eligibility)}</p>` : ""}<div class="reasons">${reasons}</div><div class="warnings">${warnings}</div><div class="actions"><a href="${escapeHtml(item.applicationUrl || item.url)}" target="_blank" rel="noopener">Apply on ETHGlobal ↗</a></div></article>`;
+  return `<article class="opportunity-card">${media}<div class="opportunity-top"><span class="category ${item.category}">${escapeHtml(categoryNames[item.category] || item.category)}${collection ? " feed" : ""}</span><span class="rank">#${String(index + 1).padStart(2, "0")}</span></div><div class="score"><strong>${item.score}</strong><small>VERIFIED SCORE</small></div><h3>${escapeHtml(item.title)}</h3><p class="source">${escapeHtml(item.organizer || "Organizer not stated")} · <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.sourceHost)}</a>${item.verification === "page-verified" ? " · official page checked" : ""}</p><p class="summary">${escapeHtml(item.summary || "Open the source to review this opportunity.")}</p><div class="facts"><div><small>APPLICATION DEADLINE</small><strong>${escapeHtml(deadline)}</strong></div><div><small>PRIZE POOL</small><strong>${escapeHtml(collection ? "Varies" : item.reward || "Not stated")}</strong></div></div>${item.eligibility ? `<p class="eligibility"><b>Who can apply:</b> ${escapeHtml(item.eligibility)}</p>` : ""}<div class="reasons">${reasons}</div><div class="warnings">${warnings}</div><div class="actions"><a href="${escapeHtml(item.applicationUrl || item.url)}" target="_blank" rel="noopener">Apply ↗</a></div></article>`;
 }
+
+function renderFilters(items) {
+  const counts = new Map();
+  for (const item of items) counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+  const cats = [...counts.keys()].sort();
+  filters.innerHTML = [
+    `<button class="filter${category === "all" ? " active" : ""}" data-category="all">All opportunities (${items.length})</button>`,
+    ...cats.map(
+      (cat) =>
+        `<button class="filter${category === cat ? " active" : ""}" data-category="${cat}">${escapeHtml(categoryNames[cat] || cat)} (${counts.get(cat)})</button>`,
+    ),
+  ].join("");
+  filters.querySelectorAll(".filter").forEach((button) =>
+    button.addEventListener("click", () => {
+      category = button.dataset.category;
+      render();
+    }),
+  );
+}
+
+function render() {
+  if (!catalog) return;
+  const qualified = qualifiedOpportunities(catalog.opportunities);
+  const scoped = category === "all" ? qualified : qualified.filter((item) => item.category === category);
+  const opportunities = sortOpportunities(scoped, $("#sort").value);
+
+  renderFilters(qualified);
+  const categoriesShown = new Set(opportunities.map((item) => item.category));
+  $("#stats").innerHTML =
+    `<div><strong>${opportunities.length}</strong><span>${category === "all" ? "LIVE OPPORTUNITIES" : "IN THIS SHELF"}</span></div><div><strong>${categoriesShown.size}</strong><span>CATEGORIES SHOWN</span></div><div><strong>${relativeTime(catalog.lastSyncedAt)}</strong><span>LAST CHECKED</span></div>`;
+  feed.innerHTML = opportunities.length
+    ? opportunities.map(card).join("")
+    : `<article class="empty"><p class="eyebrow">CATALOGUE SYNCING</p><h3>No verified opportunities are on this shelf yet.</h3><p>Try another category — OpenShelf never fills an empty shelf with invented listings.</p></article>`;
+  progress.textContent =
+    `${opportunities.length} RESULT${opportunities.length === 1 ? "" : "S"}` +
+    (catalog.failures?.length ? ` · ${catalog.failures.length} SOURCE WARNING(S)` : "") +
+    ` · ${nextRefreshText(catalog.lastSyncedAt)}`;
+}
+
 async function load() {
-  progress.textContent = "LOADING LIVE CATALOGUE…";
+  progress.textContent = "LOADING CATALOGUE…";
   try {
-    const data = await api(
-      `/api/opportunities?category=${encodeURIComponent(category)}&sort=${encodeURIComponent($("#sort").value)}`,
-    );
-    const categories = new Set(data.opportunities.map((item) => item.category));
-    $("#stats").innerHTML =
-      `<div><strong>${data.opportunities.length}</strong><span>${category === "all" ? "LIVE OPPORTUNITIES" : "IN THIS SHELF"}</span></div><div><strong>${categories.size}</strong><span>CATEGORIES SHOWN</span></div><div><strong>${relativeSync(data.lastSyncedAt)}</strong><span>LAST CHECKED</span></div>`;
-    feed.innerHTML = data.opportunities.length
-      ? data.opportunities.map(card).join("")
-      : `<article class="empty"><p class="eyebrow">CATALOGUE SYNCING</p><h3>No verified opportunities are on this shelf yet.</h3><p>Refresh the live data or try another category. OpenShelf never fills an empty shelf with invented listings.</p></article>`;
-    feed.querySelectorAll(".build-pack").forEach((button) =>
-      button.addEventListener("click", () => {
-        document.querySelector(".bidkit-panel").open = true;
-        compile(button.dataset.url);
-      }),
-    );
-    progress.textContent = `${data.opportunities.length} LIVE RESULT${data.opportunities.length === 1 ? "" : "S"}${data.failures?.length ? ` · ${data.failures.length} SOURCE WARNING(S)` : ""}`;
+    const response = await fetch("data/opportunities.json", { cache: "no-store" });
+    if (!response.ok) throw new Error(`catalog fetch failed (${response.status})`);
+    catalog = await response.json();
+    render();
   } catch (error) {
     progress.textContent = `CATALOGUE ERROR · ${error.message}`;
   }
 }
-document.querySelectorAll(".filter").forEach((button) =>
-  button.addEventListener("click", () => {
-    document
-      .querySelectorAll(".filter")
-      .forEach((item) => item.classList.remove("active"));
-    button.classList.add("active");
-    category = button.dataset.category;
-    load();
-  }),
-);
-$("#sort").addEventListener("change", load);
-$("#refresh").addEventListener("click", async () => {
-  const button = $("#refresh");
-  button.disabled = true;
-  button.textContent = "Checking sources…";
-  try {
-    await api("/api/opportunities/refresh", { method: "POST" });
-    await load();
-  } catch (error) {
-    progress.textContent = `REFRESH ERROR · ${error.message}`;
-  } finally {
-    button.disabled = false;
-    button.textContent = "Refresh live data";
-  }
-});
-$("#url-form")?.addEventListener("submit", (event) => {
-  event.preventDefault();
-  compile($("#url").value);
-});
-async function compile(url) {
-  compileProgress.textContent = "READING NOTICE + ATTACHMENTS…";
-  compileResults.innerHTML = "";
-  try {
-    const data = await api("/api/compile", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    const s = data.specification;
-    const blob = new Blob([data.markdown], { type: "text/markdown" }),
-      download = URL.createObjectURL(blob);
-    compileResults.innerHTML = `<article class="pack"><p class="eyebrow">BID PACK COMPILED</p><h2>${escapeHtml(s.title)}</h2><p class="source">${escapeHtml(s.buyer)} · Deadline ${escapeHtml(s.deadline || "not verified")}</p><div class="pack-grid"><div class="metric"><strong>${s.requirements.length}</strong><span>REQUIREMENTS</span></div><div class="metric"><strong>${s.requiredDocuments.length}</strong><span>DOCUMENTS</span></div><div class="metric"><strong>${s.forms.length}</strong><span>FORMS</span></div><div class="metric"><strong>${data.attachmentCount}</strong><span>ATTACHMENTS READ</span></div></div><a class="download" href="${download}" download="bidkit-response-pack.md">Download response workspace ↓</a></article>`;
-    compileProgress.textContent = "SOURCE-LINKED WORKSPACE READY";
-  } catch (error) {
-    compileProgress.textContent = `COMPILER ERROR · ${error.message}`;
-  }
-}
+
+$("#sort").addEventListener("change", render);
 load();
