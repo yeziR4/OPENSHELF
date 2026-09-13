@@ -169,3 +169,105 @@ export function normalizeEthGlobalEvent(markdown: string, url: string, today = n
     dataWarnings: deadline.iso ? ["Deadline time shown as published; confirm the event timezone"] : ["ETHGlobal has not published an application closing time"], imageUrl, imageAlt: `${title} logo`,
   };
 }
+
+// --- Anakin pipeline feed (data/anakin-feed.json) ---
+// Produced by scripts/anakin_pipeline/pipeline.py — a separate Python tool that
+// pulls Devpost, Unstop (hackathons/competitions/quizzes), Devfolio, MLH,
+// DoraHacks, Kajimelo and Superteam Earn through Anakin's url-scraper API,
+// normalizes them to one schema, requires every row to carry a real
+// organizer/location/prize before it's exported, and merges same-event
+// listings cross-posted on more than one source into a single row. See
+// scripts/anakin_pipeline/README.md for the full pipeline, its known gaps,
+// and how to regenerate this file.
+//
+// Every row here does resolve to a specific official event/listing page
+// (never a search result or collection page) — same integrity bar as the
+// rest of this file — but verified via each platform's own structured
+// listing API/deterministic HTML parse rather than Codex's per-page
+// AI-extraction-with-quoted-evidence pass. Marked "page-verified" so it's
+// served by the public feed like everything else; the dataWarnings on each
+// row say so explicitly rather than blur the distinction.
+const anakinCategoryMap: Record<string, OpportunityCategory> = {
+  hackathon: "hackathon",
+  competition: "competition",
+  quiz: "competition",
+  "ai-video-contest": "competition",
+  bounty: "bounty",
+};
+const anakinStatusMap: Record<string, Opportunity["status"]> = {
+  open: "open", upcoming: "upcoming", ended: "closed",
+};
+
+export function normalizeAnakinFeed(raw: Array<Record<string, unknown>>, today = new Date()): Opportunity[] {
+  return raw.flatMap(item => {
+    const url = canonicalUrl(item.url);
+    const title = nullableText(item.title, 150);
+    if (!url || !title) return [];
+    const parsed = new URL(url);
+    const category = anakinCategoryMap[String(item.category)] ?? "competition";
+    const status = anakinStatusMap[String(item.status)] ?? "unknown";
+    const mode = String(item.mode ?? "unknown");
+    const source = String(item.source ?? "unknown");
+
+    const prizeValue = typeof item.prize_amount_value === "number" ? item.prize_amount_value : null;
+    // The pipeline validates this, but a currency "code" that's actually a
+    // whole formatted price (seen once from a source's own API glitch) would
+    // otherwise double up with prizeValue below ("₹ 20,000 20,000") — guard
+    // here too rather than trust it's always been sanitized upstream.
+    const prizeCurrencyRaw = nullableText(item.prize_currency, 20);
+    const prizeCurrency = prizeCurrencyRaw && !/\d/.test(prizeCurrencyRaw) ? prizeCurrencyRaw : null;
+    const reward = prizeValue != null && prizeValue > 0
+      ? `${prizeCurrency ?? ""} ${prizeValue.toLocaleString()}`.trim()
+      : (prizeValue === 0 ? null : nullableText(item.prize_amount_raw, 100));
+
+    const deadlineAt = nullableText(item.deadline_iso, 40);
+    const deadline = deadlineAt
+      ? new Date(deadlineAt).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+      : nullableText(item.date_text_raw, 100) ?? nullableText(item.time_left_text, 60);
+
+    const evidence = [
+      deadline ? `Deadline: ${deadline}` : null,
+      reward ? `Prize: ${reward}` : null,
+      `Listed on ${source}`,
+    ].filter(Boolean).join(" · ") || null;
+
+    const dataWarnings: string[] = [
+      `Verified via ${source}'s own structured listing data, not Codex's per-page AI extraction pass`,
+    ];
+    if (prizeValue === 0) dataWarnings.push("Prize is non-cash (swag/certificate/recognition), not withheld data");
+    if (!deadline && status !== "rolling") dataWarnings.push("No deadline published by the source yet");
+
+    const base: Omit<Opportunity, "score" | "scoreReasons"> = {
+      // "anakin-" prefix (vs. the bare hash other normalizers use) lets
+      // catalog.ts's fallback-on-failure logic reliably identify rows from
+      // this feed, since — unlike ETHGlobal — sourceHost varies per row here.
+      id: `anakin-${createHash("sha256").update(url).digest("hex").slice(0, 16)}`,
+      title,
+      category,
+      organizer: nullableText(item.organizer, 100),
+      url,
+      applicationUrl: url,
+      sourceHost: parsed.hostname.replace(/^www\./, ""),
+      sourceQuality: quality(parsed),
+      entryType: "opportunity",
+      verification: "page-verified",
+      status,
+      eligibility: null,
+      evidence,
+      summary: nullableText(item.description, 360) ?? `${title} — a ${category} listed on ${source}.`,
+      deadline,
+      deadlineAt,
+      reward,
+      location: nullableText(item.location, 100),
+      remote: mode === "online" ? true : mode === "in-person" ? false : null,
+      worldwide: null,
+      freeToEnter: item.is_paid_entry === false ? true : item.is_paid_entry === true ? false : null,
+      publishedAt: null,
+      observedAt: nullableText(item.fetched_at, 40) ?? today.toISOString(),
+      dataWarnings,
+      imageUrl: nullableText(item.thumbnail_url, 300),
+      imageAlt: `${title} logo`,
+    };
+    return [{ ...base, ...scoreOpportunity(base, today) }];
+  });
+}

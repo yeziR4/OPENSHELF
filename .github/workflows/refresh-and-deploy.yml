@@ -1,0 +1,55 @@
+name: Refresh feed and deploy to GitHub Pages
+
+on:
+  schedule:
+    # Every 6 hours. Keep public/app.js's REFRESH_INTERVAL_HOURS in sync with this.
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deploy in flight at a time; a newer run supersedes an older one
+# rather than queuing behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Regenerate public/data/opportunities.json
+        run: pnpm run sync
+        env:
+          ANAKIN_API_KEY: ${{ secrets.ANAKIN_API_KEY }}
+          ANAKIN_COUNTRY: us
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
