@@ -1,0 +1,4 @@
+.source a{color:var(--ink)}
+.eligibility{font-size:13px;line-height:1.45;color:var(--muted)}
+.eligibility b{color:var(--ink)}
+blockquote{margin:12px 0;padding:10px 12px;border-left:2px solid var(--lime);background:#09140e;color:var(--muted);font-size:12px;line-height:1.45}

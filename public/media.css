@@ -1,0 +1,13 @@
+.opportunity-image {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: #fff;
+  padding: 4px;
+  margin-bottom: 18px;
+}
+
+.opportunity-card:has(.opportunity-image) .score { top: 100px; }
+.opportunity-card:has(.opportunity-image) h3 { margin-top: 22px; }
