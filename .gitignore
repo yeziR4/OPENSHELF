@@ -2,5 +2,10 @@ node_modules/
 .env
 data/*.json
 data/*.md
+# The Anakin pipeline's feed IS meant to be committed (it's the static export
+# the app reads, refreshed by re-running scripts/anakin_pipeline/pipeline.py
+# and committing the result — not a runtime-generated cache like the rest of
+# data/, which stays ignored).
+!data/anakin-feed.json
 coverage/
 *.log
