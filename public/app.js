@@ -57,6 +57,17 @@ function nextRefreshText(lastSyncedAt) {
   return minutes < 60 ? `Next check in ${minutes}m` : `Next check in ${Math.round(minutes / 60)}h`;
 }
 
+// A deadline the source page gave us that's already in the past — the
+// static Anakin feed (data/anakin-feed.json) is only rescraped when the
+// pipeline is re-run, not on every 6h sync, so "status": "open" can go
+// stale while the real-world deadline quietly passes. entryType
+// "collection" (a feed page, not a single deadline) and status "rolling"
+// have no fixed close date, so they're never treated as expired.
+function isExpired(item) {
+  if (item.entryType === "collection" || item.status === "rolling") return false;
+  return Boolean(item.deadlineAt) && Date.parse(item.deadlineAt) < Date.now();
+}
+
 // Mirrors the filter/sort logic server.ts used to apply server-side —
 // there's no server now, so this runs the same rules against the static
 // public/data/opportunities.json.
@@ -64,6 +75,7 @@ function qualifiedOpportunities(items) {
   return items.filter(
     (item) =>
       item.verification === "page-verified" &&
+      !isExpired(item) &&
       (item.entryType === "collection" ||
         Boolean(item.deadline) ||
         item.status === "rolling" ||
